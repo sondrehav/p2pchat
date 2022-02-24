@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>HTML 5 Boilerplate</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-1BmE4kWBq78iYhFldvKuhfTAU6auU8tT94WrHftjDbrCEXSU1oBoqyl2QvZ6jIW3" crossorigin="anonymous">
+    <style>
+        .message-container {
+            display: flex;
+            flex-flow: column;
+        }
+        .message {
+            border-radius: 10px;
+            background-color: var(--primary);
+        }
+        .message-me {
+            align-self: flex-end;
+        }
+        .message-other {
+            align-self: flex-start;
+        }
+        .opacity-70 {
+            opacity: 70%;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="my-4">P2Pchat</h1>
+    <p>This is a little experiment with <a href="https://webrtc.org/">WebRTC</a> and P2P messaging. With WebRTC, you can add real-time communication capabilities to your
+        application and it supports real-time video, audio and really any data-based communication between two peers. As it is P2P there
+        is no server responsible for relaying the messages between users. However, there is a small WebSocket-server responsible for
+        initiating communication between users. Further, as WebRTC is kind off flaky when it comes to NAT-gateways and networks there is
+        a Coturn-server running on AWS responsible for relaying the communication when there is no way to get around the NAT gateway of a
+        network. Details can be found <a href="https://webrtc.org/getting-started/turn-server">here</a>. </p>
+
+    <p>The application is built with <a href="https://alpinejs.dev/">Alpine.js</a> and it runs a Node/Express server on "the backend". The
+    Node server is very barebones and is only responsible for initiating RTC connections. WebRTC does not work great on Firefox. There is
+    some polyfills available for working around the limitations, but as this is simply an experiment I did not bother with it. So <i>unfortunately</i>
+    you'll have to use Chrome for this.</p>
+
+    <p>The application is made by Sondre Slåttedal Havellen and source code can be found <a href="">here</a>.</p>
+
+    <div x-data="webSocketConnection()" x-init="await connect()">
+            <div class="my-4">
+                <h3 class="my-4" x-text="!data ? 'Waiting for another person' : 'Connected to a random person!'"></h3>
+                <form action="/register" method="POST" class="mt-8" @submit.prevent="submitData">
+                    <div class="input-group mb-3">
+                        <input x-model="formData.message" name="message" type="text" class="form-control"
+                               placeholder="Message" aria-label="Message" aria-describedby="button-addon2" x-bind:disabled="!data">
+                        <button class="btn btn-primary" type="submit" id="button-addon2" x-bind:disabled="!data">Send</button>
+                    </div>
+                </form>
+            </div>
+        </template>
+        <template x-if="error">
+            <div class="my-4">
+                <h1>Error</h1>
+                <pre class="m-2 p-2 bg-light" x-text="JSON.stringify(error)"></pre>
+            </div>
+        </template>
+
+        <div x-show="data">
+            <h3 class="my-4">Messages</h3>
+            <div class="message-container">
+                <template x-for="message in messages">
+                    <div x-bind:class="(message.me ? 'message-me bg-primary' : 'message-other bg-secondary') + ' message py-2 px-4 m-2 text-white'">
+                        <div class="mb-1 opacity-70" x-text="message.timestamp.toLocaleTimeString()"></div>
+                        <p class="card-text mb-auto" x-text="message.message"></p>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+    </div>
+</div>
+<script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-ka7Sk0Gln4gmtz2MlQnikT1wXgYsOg+OMhuP+IlRH9sENBO0LRn5q+8nbTov4+1p"
+        crossorigin="anonymous"></script>
+<script>
+
+  const rtcConfiguration = {
+    'iceServers': [
+      {
+        urls: "stun:chatapp.havellen.no:3478",
+        username: "holyhell",
+        credential: "thatistheplan",
+      }, {
+        urls: "turn:chatapp.havellen.no:3478",
+        username: "holyhell",
+        credential: "thatistheplan",
+      }
+    ]
+  }
+
+  const rtcConnected = async (rtc) =>
+      new Promise(((resolve, reject) => {
+        console.log("waiting for connection...")
+        if (rtc.connectionState === "connected") return resolve(rtc);
+        rtc.onconnectionstatechange = _ => {
+          console.log("connection state change: ", rtc.connectionState);
+          switch (rtc.connectionState) {
+            case "connected": {
+              rtc.onconnectionstatechange = null;
+              return resolve(rtc);
+            }
+            case "failed": {
+              rtc.onconnectionstatechange = null;
+              return reject("failed to establish p2p connection")
+            }
+          }
+        }
+      }));
+
+  function webSocketConnection() {
+    return {
+
+        isConnecting: null,
+        data: null,
+        error: null,
+        messages: [],
+        formData: {
+          message: ""
+        },
+        submitData: () => {},
+
+        async connect() {
+          return new Promise((resolve, reject) => {
+            this.isConnecting = "Initiating WebSocket"
+            const ws = new WebSocket("ws://localhost:3000/");
+            ws.onopen = () => {
+              resolve(ws);
+            }
+            ws.onerror = (error) => {
+              console.error(error);
+              reject(error);
+            }
+          }).then(async (ws) => {
+            this.isConnecting = "Connecting to peer";
+            const rtc = new RTCPeerConnection(rtcConfiguration);
+            const dc = rtc.createDataChannel("messages");
+            rtc.onicecandidate = (e) => {
+              if (!e.candidate) return;
+              console.log("sending candidate");
+              ws.send(JSON.stringify({type: "candidate", payload: JSON.stringify(e.candidate)}));
+            }
+            ws.onmessage = async ({data}) => {
+              const {type, payload} = JSON.parse(data);
+              if (!type) throw new Error("Message did not have a type.");
+              console.log(`message type: ${type}`);
+              switch (type) {
+                case "init": {
+                  const offer = await rtc.createOffer();
+                  await rtc.setLocalDescription(offer);
+                  ws.send(JSON.stringify({type: "offer", payload: JSON.stringify(offer)}));
+                  break;
+                }
+                case "offer": {
+                  await rtc.setRemoteDescription(JSON.parse(payload));
+                  const answer = await rtc.createAnswer();
+                  await rtc.setLocalDescription(answer);
+                  ws.send(JSON.stringify({type: "answer", payload: JSON.stringify(answer)}));
+                  break;
+                }
+                case "answer": {
+                  await rtc.setRemoteDescription(JSON.parse(payload));
+                  break;
+                }
+                case "candidate": {
+                  if (rtc.remoteDescription) {
+                    await rtc.addIceCandidate(JSON.parse(payload));
+                  }
+                  break;
+                }
+                default: {
+                  console.log("unknown message type: ", type);
+                }
+              }
+            }
+            ws.onclose = () => {
+              console.log("ws closed")
+            };
+            ws.onerror = err => {
+              console.error(err);
+            }
+
+            return await rtcConnected(rtc).then((rtc) => {
+              ws.close();
+              return {rtc, dc};
+            });
+
+          }).then(async ({rtc, dc}) => new Promise((resolve) => {
+            rtc.ondatachannel = (e) => {
+              resolve({incoming: e.channel, outgoing: dc, rtc});
+            }
+          })).then(res => {
+            this.data = res;
+            const { incoming, outgoing, rtc } = res;
+            incoming.onmessage = ({ data }) => {
+              const dt = JSON.parse(data);
+              this.messages.push({
+                me: false,
+                timestamp: new Date(),
+                ...dt
+              });
+            }
+
+            rtc.onconnectionstatechange = _ => {
+              switch (rtc.connectionState) {
+                case "failed":
+                case "closed":
+                case "disconnected": {
+                  rtc.onconnectionstatechange = null;
+                  this.data = null;
+                  this.formData.message = "";
+                  this.messages = [];
+                  this.error = null;
+                  this.submitData = () => {};
+                  this.connect();
+                }
+              }
+            }
+
+            this.submitData = () => {
+              const obj = {
+                message: this.formData.message
+              }
+              outgoing.send(JSON.stringify(obj));
+              this.messages.push({
+                me: true,
+                timestamp: new Date(),
+                ...obj
+              })
+              this.formData.message = "";
+            }
+          }).catch(err => {
+            console.error(err);
+            this.error = err;
+          }).finally(() => {
+            this.isConnecting = null;
+          });
+        }
+    }
+  }
+</script>
+</body>
+</html>
